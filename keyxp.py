@@ -10,29 +10,38 @@ URL = "https://keyxp.co/giveaway"
 DATA_FILE = "keyxp_last.json"
 WEBHOOK = os.getenv("WEBHOOK_URL")
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
 def load_old():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
+
 def save_new(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
+
 def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
+
 def scrape_keyxp():
-    r = requests.get(URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+    r = requests.get(URL, headers=HEADERS, timeout=25)
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "html.parser")
+
     print("TITLE:", soup.select_one(".giveaway-hero-title"))
+    print("GAME LINKS:", len(soup.select(".giveaway-hero-game-link")))
+    print("IMAGES:", len(soup.select(".giveaway-hero-card-image img")))
 
-print("GAME LINKS:", len(soup.select(".giveaway-hero-game-link")))
-
-print("IMAGES:", len(soup.select(".giveaway-hero-card-image img")))
     page_text = soup.get_text(" ", strip=True).lower()
 
     title_el = soup.select_one(".giveaway-hero-title")
@@ -71,11 +80,7 @@ print("IMAGES:", len(soup.select(".giveaway-hero-card-image img")))
     for game in games:
         game["image"] = images.get(game["name"])
 
-    banner_image = None
-    for game in games:
-        if game.get("image"):
-            banner_image = game["image"]
-            break
+    banner_image = next((game.get("image") for game in games if game.get("image")), None)
 
     description_el = soup.select_one(".giveaway-hero-description")
     description = clean(description_el.get_text()) if description_el else ""
@@ -94,6 +99,7 @@ print("IMAGES:", len(soup.select(".giveaway-hero-card-image img")))
         "banner_image": banner_image
     }
 
+
 def send_discord(data):
     available = data["status"] == "Available"
     status_text = "🟢 Available" if available else "🔴 Closed"
@@ -105,6 +111,7 @@ def send_discord(data):
     for game in data["games"]:
         name = game["name"]
         url = game.get("url")
+
         if url:
             games_lines.append(f"🎮 [{name}]({url})")
         else:
@@ -152,6 +159,7 @@ def send_discord(data):
     webhook.add_embed(embed)
     webhook.execute()
 
+
 def main():
     if not WEBHOOK:
         print("WEBHOOK_URL missing")
@@ -166,6 +174,7 @@ def main():
         print("Posted:", json.dumps(new, indent=2))
     else:
         print("No change")
+
 
 if __name__ == "__main__":
     main()
