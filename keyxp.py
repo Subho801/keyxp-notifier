@@ -28,6 +28,11 @@ def scrape_keyxp():
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "html.parser")
+    print("TITLE:", soup.select_one(".giveaway-hero-title"))
+
+print("GAME LINKS:", len(soup.select(".giveaway-hero-game-link")))
+
+print("IMAGES:", len(soup.select(".giveaway-hero-card-image img")))
     page_text = soup.get_text(" ", strip=True).lower()
 
     title_el = soup.select_one(".giveaway-hero-title")
