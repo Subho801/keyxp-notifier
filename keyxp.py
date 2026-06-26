@@ -1,19 +1,14 @@
 import os
 import json
 import re
-import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from discord_webhook import DiscordWebhook, DiscordEmbed
+from playwright.sync_api import sync_playwright
 
 URL = "https://keyxp.co/giveaway"
 DATA_FILE = "keyxp_last.json"
 WEBHOOK = os.getenv("WEBHOOK_URL")
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-}
 
 
 def load_old():
@@ -32,11 +27,45 @@ def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def scrape_keyxp():
-    r = requests.get(URL, headers=HEADERS, timeout=25)
-    r.raise_for_status()
+def get_html():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
 
-    soup = BeautifulSoup(r.text, "html.parser")
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 768},
+        )
+
+        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+
+        try:
+            page.wait_for_selector(".giveaway-hero-title", timeout=30000)
+        except Exception:
+            print("Could not find giveaway selector. Saving debug.html")
+
+        html = page.content()
+
+        with open("debug.html", "w", encoding="utf-8") as f:
+            f.write(html)
+
+        browser.close()
+        return html
+
+
+def scrape_keyxp():
+    html = get_html()
+    soup = BeautifulSoup(html, "html.parser")
 
     print("TITLE:", soup.select_one(".giveaway-hero-title"))
     print("GAME LINKS:", len(soup.select(".giveaway-hero-game-link")))
@@ -66,7 +95,7 @@ def scrape_keyxp():
         if name:
             games.append({
                 "name": name,
-                "url": href
+                "url": href,
             })
 
     images = {}
@@ -80,7 +109,7 @@ def scrape_keyxp():
     for game in games:
         game["image"] = images.get(game["name"])
 
-    banner_image = next((game.get("image") for game in games if game.get("image")), None)
+    banner_image = next((g.get("image") for g in games if g.get("image")), None)
 
     description_el = soup.select_one(".giveaway-hero-description")
     description = clean(description_el.get_text()) if description_el else ""
@@ -96,7 +125,7 @@ def scrape_keyxp():
         "description": description,
         "end_notice": end_notice,
         "games": games,
-        "banner_image": banner_image
+        "banner_image": banner_image,
     }
 
 
@@ -135,14 +164,14 @@ def send_discord(data):
         embed.add_embed_field(
             name="📝 Details",
             value=data["description"][:1024],
-            inline=False
+            inline=False,
         )
 
     if data.get("end_notice"):
         embed.add_embed_field(
             name="⚠️ Notice",
             value=data["end_notice"][:1024],
-            inline=False
+            inline=False,
         )
 
     if data.get("banner_image"):
@@ -153,7 +182,7 @@ def send_discord(data):
 
     webhook = DiscordWebhook(
         url=WEBHOOK,
-        content="🎁 **KeyXP giveaway updated!**"
+        content="🎁 **KeyXP giveaway updated!**",
     )
 
     webhook.add_embed(embed)
