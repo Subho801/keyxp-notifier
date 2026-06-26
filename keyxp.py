@@ -10,11 +10,6 @@ URL = "https://keyxp.co/giveaway"
 DATA_FILE = "keyxp_last.json"
 WEBHOOK = os.getenv("WEBHOOK_URL")
 
-SKIP_WORDS = {
-    "KeyXP", "Current Giveaway", "FAQs", "About KeyXP", "My Account",
-    "Log in with Discord", "Discord", "Why Discord? See our", "for more info."
-}
-
 def load_old():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -33,51 +28,65 @@ def scrape_keyxp():
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "html.parser")
-    text = soup.get_text("\n", strip=True)
-    lower = text.lower()
+    page_text = soup.get_text(" ", strip=True).lower()
 
-    title = "KeyXP Giveaway"
-    for line in text.split("\n"):
-        line = clean(line)
-        if "giveaway" in line.lower() and 5 < len(line) < 80 and line != "Current Giveaway":
-            title = line
-            break
+    title_el = soup.select_one(".giveaway-hero-title")
+    title = clean(title_el.get_text()) if title_el else "KeyXP Giveaway"
+
+    stats = []
+    for span in soup.select(".giveaway-hero-stats span"):
+        value = clean(span.get_text())
+        if value and value != "|":
+            stats.append(value)
 
     status = "Available"
-    if any(x in lower for x in ["giveaway closed", "no keys", "all keys", "ended", "expired"]):
+    if any(x in page_text for x in ["giveaway closed", "no keys", "all keys gone", "ended", "expired"]):
         status = "Closed"
 
     games = []
-    for a in soup.find_all("a"):
-        name = clean(a.get_text(" ", strip=True))
-        href = a.get("href", "")
+    for link in soup.select(".giveaway-hero-games-list .giveaway-hero-game-link"):
+        name_el = link.select_one("span")
+        name = clean(name_el.get_text()) if name_el else clean(link.get_text())
+        href = link.get("href")
 
-        if not name or name in SKIP_WORDS:
-            continue
+        if name:
+            games.append({
+                "name": name,
+                "url": href
+            })
 
-        if len(name) > 70:
-            continue
+    images = {}
+    for img in soup.select(".giveaway-hero-card-image img"):
+        name = clean(img.get("alt", ""))
+        src = img.get("src")
 
-        if "steam" in href.lower() or "store.steampowered" in href.lower() or name.lower() in lower:
-            if name not in games:
-                games.append(name)
+        if name and src:
+            images[name] = urljoin(URL, src)
 
-    images = []
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src")
-        if src:
-            full = urljoin(URL, src)
-            if full not in images:
-                images.append(full)
+    for game in games:
+        game["image"] = images.get(game["name"])
 
-    main_image = images[0] if images else None
+    banner_image = None
+    for game in games:
+        if game.get("image"):
+            banner_image = game["image"]
+            break
+
+    description_el = soup.select_one(".giveaway-hero-description")
+    description = clean(description_el.get_text()) if description_el else ""
+
+    end_notice_el = soup.select_one(".giveaway-hero-end-notice")
+    end_notice = clean(end_notice_el.get_text()) if end_notice_el else ""
 
     return {
         "title": title,
         "status": status,
         "url": URL,
-        "games": games[:10] or ["Check website for featured games"],
-        "image": main_image,
+        "stats": stats,
+        "description": description,
+        "end_notice": end_notice,
+        "games": games,
+        "banner_image": banner_image
     }
 
 def send_discord(data):
@@ -85,21 +94,47 @@ def send_discord(data):
     status_text = "🟢 Available" if available else "🔴 Closed"
     color = "FFC400" if available else "E74C3C"
 
-    games_text = "\n".join(f"🎮 **{g}**" for g in data["games"])
+    stats_text = " | ".join(data.get("stats", [])) or "Steam keys giveaway"
+
+    games_lines = []
+    for game in data["games"]:
+        name = game["name"]
+        url = game.get("url")
+        if url:
+            games_lines.append(f"🎮 [{name}]({url})")
+        else:
+            games_lines.append(f"🎮 **{name}**")
+
+    games_text = "\n".join(games_lines) or "Check website for featured games"
 
     embed = DiscordEmbed(
-        title="🎁 KeyXP Giveaway Updated!",
+        title=f"🎁 {data['title']}",
         description=(
-            f"**Giveaway:** {data['title']}\n"
-            f"**Status:** {status_text}\n\n"
-            f"📋 **Featured Games:**\n{games_text}\n\n"
+            f"**Status:** {status_text}\n"
+            f"**Info:** {stats_text}\n\n"
+            f"📋 **Featured Games:**\n"
+            f"{games_text}\n\n"
             f"🔗 **[Claim Giveaway]({data['url']})**"
         ),
         color=color,
     )
 
-    if data.get("image"):
-        embed.set_image(url=data["image"])
+    if data.get("description"):
+        embed.add_embed_field(
+            name="📝 Details",
+            value=data["description"][:1024],
+            inline=False
+        )
+
+    if data.get("end_notice"):
+        embed.add_embed_field(
+            name="⚠️ Notice",
+            value=data["end_notice"][:1024],
+            inline=False
+        )
+
+    if data.get("banner_image"):
+        embed.set_image(url=data["banner_image"])
 
     embed.set_footer(text="KeyXP Giveaway Notifier • Subho")
     embed.set_timestamp()
@@ -108,6 +143,7 @@ def send_discord(data):
         url=WEBHOOK,
         content="🎁 **KeyXP giveaway updated!**"
     )
+
     webhook.add_embed(embed)
     webhook.execute()
 
@@ -122,7 +158,7 @@ def main():
     if old != new:
         send_discord(new)
         save_new(new)
-        print("Posted:", new)
+        print("Posted:", json.dumps(new, indent=2))
     else:
         print("No change")
 
