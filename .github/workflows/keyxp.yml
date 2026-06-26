@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   check:
@@ -21,12 +22,22 @@ jobs:
           python-version: "3.11"
 
       - name: Install packages
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
 
       - name: Run notifier
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
         run: python keyxp.py
+
+      - name: Upload debug HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyxp-debug-html
+          path: debug.html
+          if-no-files-found: ignore
 
       - name: Commit cache
         run: |
@@ -35,6 +46,6 @@ jobs:
 
           git add keyxp_last.json
 
-          git diff --cached --quiet || git commit -m "Update cache"
+          git diff --cached --quiet || git commit -m "Update KeyXP cache"
 
           git push
