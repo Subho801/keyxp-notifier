@@ -3,30 +3,17 @@ import json
 import re
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 from discord_webhook import DiscordWebhook, DiscordEmbed
 
 URL = "https://keyxp.co/giveaway"
 DATA_FILE = "keyxp_last.json"
 WEBHOOK = os.getenv("WEBHOOK_URL")
 
-KNOWN_GAMES = [
-    "AWAY: Journey to the Unexpected",
-    "Passing By - A Tailwind Journey",
-    "Spitkiss",
-    "Yono and the Celestial Elephants",
-    "reky",
-]
-
-GAME_IMAGES = {
-    "AWAY: Journey to the Unexpected": "https://cdn.cloudflare.steamstatic.com/steam/apps/573110/header.jpg",
-    "Passing By - A Tailwind Journey": "https://cdn.cloudflare.steamstatic.com/steam/apps/2085440/header.jpg",
-    "Spitkiss": "https://cdn.cloudflare.steamstatic.com/steam/apps/803600/header.jpg",
-    "Yono and the Celestial Elephants": "https://cdn.cloudflare.steamstatic.com/steam/apps/602430/header.jpg",
-    "reky": "https://cdn.cloudflare.steamstatic.com/steam/apps/1738860/header.jpg",
+SKIP_WORDS = {
+    "KeyXP", "Current Giveaway", "FAQs", "About KeyXP", "My Account",
+    "Log in with Discord", "Discord", "Why Discord? See our", "for more info."
 }
-
-KEYXP_LOGO = "https://keyxp.co/favicon.ico"
-
 
 def load_old():
     if os.path.exists(DATA_FILE):
@@ -34,98 +21,95 @@ def load_old():
             return json.load(f)
     return {}
 
-
 def save_new(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-
-def clean_text(value):
-    return re.sub(r"\s+", " ", value).strip()
-
+def clean(text):
+    return re.sub(r"\s+", " ", text).strip()
 
 def scrape_keyxp():
-    r = requests.get(
-        URL,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-        timeout=25,
-    )
+    r = requests.get(URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "html.parser")
     text = soup.get_text("\n", strip=True)
-    lower_text = text.lower()
+    lower = text.lower()
 
     title = "KeyXP Giveaway"
-
     for line in text.split("\n"):
-        line = clean_text(line)
-        if "giveaway" in line.lower() and len(line) <= 80:
-            if line.lower() not in ["current giveaway"]:
-                title = line
-                break
+        line = clean(line)
+        if "giveaway" in line.lower() and 5 < len(line) < 80 and line != "Current Giveaway":
+            title = line
+            break
 
     status = "Available"
-    if any(x in lower_text for x in ["giveaway closed", "all keys", "no keys", "ended", "expired"]):
+    if any(x in lower for x in ["giveaway closed", "no keys", "all keys", "ended", "expired"]):
         status = "Closed"
 
     games = []
-    for game in KNOWN_GAMES:
-        if game.lower() in lower_text:
-            games.append(game)
+    for a in soup.find_all("a"):
+        name = clean(a.get_text(" ", strip=True))
+        href = a.get("href", "")
 
-    if not games:
-        games = KNOWN_GAMES
+        if not name or name in SKIP_WORDS:
+            continue
 
-    image = GAME_IMAGES.get(games[0], KEYXP_LOGO)
+        if len(name) > 70:
+            continue
+
+        if "steam" in href.lower() or "store.steampowered" in href.lower() or name.lower() in lower:
+            if name not in games:
+                games.append(name)
+
+    images = []
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src")
+        if src:
+            full = urljoin(URL, src)
+            if full not in images:
+                images.append(full)
+
+    main_image = images[0] if images else None
 
     return {
         "title": title,
         "status": status,
         "url": URL,
-        "games": games,
-        "image": image,
+        "games": games[:10] or ["Check website for featured games"],
+        "image": main_image,
     }
 
-
 def send_discord(data):
-    is_available = data["status"] == "Available"
+    available = data["status"] == "Available"
+    status_text = "🟢 Available" if available else "🔴 Closed"
+    color = "FFC400" if available else "E74C3C"
 
-    status_text = "🟢 Available" if is_available else "🔴 Closed"
-    color = "FFC400" if is_available else "E74C3C"
-
-    games_text = "\n".join([f"🎮 **{game}**" for game in data["games"]])
-
-    description = (
-        f"🎁 **{data['title']}**\n\n"
-        f"**Status:** {status_text}\n\n"
-        f"📋 **Featured Games:**\n"
-        f"{games_text}\n\n"
-        f"🔗 **[Claim Giveaway]({data['url']})**"
-    )
+    games_text = "\n".join(f"🎮 **{g}**" for g in data["games"])
 
     embed = DiscordEmbed(
         title="🎁 KeyXP Giveaway Updated!",
-        description=description,
+        description=(
+            f"**Giveaway:** {data['title']}\n"
+            f"**Status:** {status_text}\n\n"
+            f"📋 **Featured Games:**\n{games_text}\n\n"
+            f"🔗 **[Claim Giveaway]({data['url']})**"
+        ),
         color=color,
     )
 
-    embed.set_thumbnail(url=KEYXP_LOGO)
-    embed.set_image(url=data["image"])
+    if data.get("image"):
+        embed.set_image(url=data["image"])
+
     embed.set_footer(text="KeyXP Giveaway Notifier • Subho")
     embed.set_timestamp()
 
     webhook = DiscordWebhook(
         url=WEBHOOK,
-        content="🎁 **New KeyXP giveaway update found!**"
+        content="🎁 **KeyXP giveaway updated!**"
     )
-
     webhook.add_embed(embed)
     webhook.execute()
-
 
 def main():
     if not WEBHOOK:
@@ -141,7 +125,6 @@ def main():
         print("Posted:", new)
     else:
         print("No change")
-
 
 if __name__ == "__main__":
     main()
