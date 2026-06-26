@@ -1,15 +1,16 @@
-name: KeyXP Notifier
+name: KeyXP Giveaway
 
 on:
+  workflow_dispatch:
+
   schedule:
     - cron: "*/10 * * * *"
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  run:
+  check:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,16 +20,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests beautifulsoup4 discord-webhook
+      - name: Install packages
+        run: pip install -r requirements.txt
 
-      - run: python keyxp.py
+      - name: Run notifier
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: python keyxp.py
 
-      - name: Save last result
+      - name: Commit cache
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+
           git add keyxp_last.json
-          git commit -m "update keyxp cache" || exit 0
+
+          git diff --cached --quiet || git commit -m "Update cache"
+
           git push
